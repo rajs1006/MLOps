@@ -1,0 +1,243 @@
+SPREAD:                                         "WITH t AS (
+                                                  SELECT
+                                                    time_bucket_gapfill(
+                                                      '1 HOUR',
+                                                      delivery_start AT TIME ZONE {timezone},
+                                                      '{startDate} {startHour}:00:00',
+                                                      '{endDate} 24:00:00'
+                                                      ) AS delivery_start,
+                                                    AVG(value) AS price_diff
+                                                  FROM algotrader.ireland.spread_data
+                                                  WHERE spread_id = 1
+                                                  AND '{startDate} {startHour}:00:00' <= delivery_start AT TIME ZONE {timezone}
+                                                  AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00'
+                                                  GROUP BY 1
+                                                )
+                                                SELECT
+                                                  extract(epoch from delivery_start)::int as epoch_time,
+                                                  delivery_start,
+                                                  LAG(price_diff, {hourLag}) OVER (ORDER BY delivery_start) AS price_diff
+                                                FROM t
+                                                ORDER BY 1
+                                                "
+
+
+ACTUAL_FUNDS_QUERY :                         "WITH LAST_ AS (
+                                                  SELECT delivery_start AT TIME ZONE {timezone} AS delivery_start, 
+                                                  LAST(value, update_time) AS value
+                                                  FROM ireland.fundamentals_actual
+                                                  WHERE '{startDate}' <= delivery_start AT TIME ZONE {timezone}
+                                                    AND delivery_start AT TIME ZONE {timezone} < '{endDate}'
+                                                    AND fundamental_id = {id_}
+                                                  GROUP BY 1
+                                                ), ACTUAL AS (
+                                                  SELECT
+                                                    time_bucket_gapfill(
+                                                      '1 HOUR',
+                                                      delivery_start,
+                                                      '{startDate}',
+                                                      '{endDate}'
+                                                    ) AS delivery_start,
+                                                    AVG(value) AS value
+                                                  FROM LAST_
+                                                  GROUP BY 1
+                                                )
+                                                SELECT
+                                                  extract(epoch from delivery_start)::int as epoch_time,
+                                                  delivery_start,
+                                                  LAG(value, {hourLag}) OVER (ORDER BY delivery_start) AS {name_}
+                                                FROM ACTUAL
+                                                ORDER BY 1
+                                             "
+                                            
+LAGS:        "WITH LAG_SPREAD AS (
+                SELECT
+                time_bucket_gapfill(
+                  '1 HOUR',
+                  delivery_start AT TIME ZONE {timezone},
+                  date('{startDate} {startHour}:00:00') - INTERVAL '1 YEAR',
+                  '{endDate} 24:00:00'
+                ) AS delivery_start,
+                    AVG(VALUE) AS spread
+                    FROM algotrader.ireland.spread_data
+                    WHERE date('{startDate} {startHour}:00:00') - INTERVAL '1 YEAR' <= delivery_start AT TIME ZONE {timezone}
+                    AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00'
+                    AND spread_id = 1
+                    GROUP BY 1
+                ),
+                AVG_SPREAD AS (
+                    SELECT
+                    delivery_start,
+                    LAG(spread, {hourLag}) OVER (ORDER BY delivery_start) AS spread
+                    FROM LAG_SPREAD
+                ),
+                SPRD AS (
+                    SELECT
+                        delivery_start,
+                        spread,
+                        AVG(spread) OVER (PARTITION BY DATE(delivery_start) ORDER BY DATE(delivery_start)) AS day_avg,
+                        SUM(spread) OVER (PARTITION BY DATE(delivery_start) ORDER BY DATE(delivery_start)) AS day_sum,
+                        MEDIAN(spread) OVER (PARTITION BY DATE(delivery_start) ORDER BY DATE(delivery_start)) AS day_median,
+                        AVG(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS rolling_2_avg,
+                        AVG(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS rolling_3_avg,
+                        AVG(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 7 PRECEDING AND CURRENT ROW) AS rolling_7_avg,
+                        AVG(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 30 PRECEDING AND CURRENT ROW) AS rolling_30_avg,
+                        MEDIAN(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS rolling_2_median, 
+                        MEDIAN(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS rolling_3_median,
+                        MEDIAN(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 7 PRECEDING AND CURRENT ROW) AS rolling_7_median,
+                        MEDIAN(spread) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start ROWS BETWEEN 30 PRECEDING AND CURRENT ROW) AS rolling_30_median
+                        FROM AVG_SPREAD
+                )
+                SELECT
+                    extract(epoch from delivery_start)::int as epoch_time,
+                    delivery_start,
+                    EXTRACT(DAY FROM delivery_start) AS day,
+                    EXTRACT(DOW FROM delivery_start) AS weekday,
+                    EXTRACT(DOY FROM delivery_start) AS year_day,
+                    EXTRACT(WEEK FROM delivery_start) AS week,
+                    EXTRACT(MONTH FROM delivery_start) AS month,
+                    EXTRACT(QUARTER FROM delivery_start) AS quarter,
+                    CASE 
+                    WHEN 
+                      TO_CHAR(delivery_start, 'YYYY-MM-DD HH24:MI:SS') >= TO_CHAR(delivery_start, 'YYYY-MM-DD {splitProductIndex}:00:00')
+                    THEN 
+                      LAG(spread, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start)
+                    WHEN 
+                      TO_CHAR(delivery_start, 'YYYY-MM-DD HH24:MI:SS') < TO_CHAR(delivery_start, 'YYYY-MM-DD {splitProductIndex}:00:00')
+                    THEN
+                      LAG(spread, 1) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) END AS lag1, 
+                    LAG(spread, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag2,
+                    LAG(spread, 3) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag3,
+                    LAG(spread, 4) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag4,
+                    LAG(spread, 5) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag5,
+                    LAG(spread, 6) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag6,
+                    LAG(spread, 7) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag7,
+                    LAG(spread, 30) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS lag30,
+                    LAG(day_avg, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_avg_lag2,
+                    LAG(day_avg, 7) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_avg_lag7,
+                    LAG(day_avg, 30) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_avg_lag30,
+                    LAG(day_median, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_median_lag2,
+                    LAG(day_median, 7) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_median_lag7,
+                    LAG(day_median, 30) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_median_lag30,
+                    LAG(day_sum, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS day_sum_lag2,
+                    LAG(rolling_2_avg, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_2_avg_lag2,
+                    LAG(rolling_3_avg, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_3_avg_lag2,
+                    LAG(rolling_7_avg, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_7_avg_lag2,
+                    LAG(rolling_30_avg, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_30_avg_lag2,
+                    LAG(rolling_2_median, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_2_median_lag2,
+                    LAG(rolling_3_median, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_3_median_lag2,
+                    LAG(rolling_7_median, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_7_median_lag2,
+                    LAG(rolling_30_median, 2) OVER (PARTITION BY TO_CHAR(delivery_start, 'HH24:MI:SS') ORDER BY delivery_start) AS rolling_30_median_lag2
+            FROM SPRD
+            ORDER BY 1"
+
+    ## day-ahead price (DA)
+DA:                                            "WITH PRICE AS (
+                                                  SELECT 
+                                                    time_bucket_gapfill(
+                                                      '1 HOUR',
+                                                      delivery_start AT TIME ZONE {timezone},
+                                                          '{startDate} {startHour}:00:00',
+                                                          '{endDate} 24:00:00'
+                                                          ) AS delivery_start,
+                                                      AVG(value) AS da_price
+                                                  FROM algotrader.ireland.auction_data
+                                                  WHERE auction_id = 2
+                                                  AND '{startDate} {startHour}:00:00' <= delivery_start AT TIME ZONE {timezone}
+                                                  AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00'
+                                                  GROUP BY 1
+                                                )
+                                                  SELECT
+                                                    extract(epoch from delivery_start)::int as epoch_time,
+                                                    delivery_start,
+                                                    LAG(da_price, {hourLag}) OVER (ORDER BY delivery_start) AS da_price
+                                                  FROM PRICE
+                                                  ORDER BY 1
+                                                  "
+                                                  
+## demand ICIS forecast
+DEMAND:                                    "WITH DEMAND AS (
+                                              SELECT
+                                                time_bucket_gapfill(
+                                                  '1 HOUR',
+                                                  delivery_start AT TIME ZONE {timezone},
+                                                  '{startDate} {startHour}:00:00',
+                                                  '{endDate} 24:00:00'
+                                                ) AS delivery_start,
+                                                enappsys
+                                              FROM algotrader.ireland.wind_demand_data_id1_auction
+                                              WHERE '{startDate} {startHour}:00:00' <= delivery_start AT TIME ZONE {timezone}
+                                              AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00'
+                                            )
+                                            SELECT
+                                              extract(epoch from delivery_start)::int as epoch_time,
+                                              delivery_start,
+                                              LAG(enappsys, {hourLag}) OVER (ORDER BY delivery_start) AS demand_enappsys
+                                            FROM DEMAND
+                                            ORDER BY 1
+                                            "
+    
+    ## all/any wind forecasts
+WIND:                                      "WITH WIND AS (
+                                              SELECT
+                                                time_bucket_gapfill(
+                                                  '1 HOUR',
+                                                  delivery_start AT TIME ZONE {timezone},
+                                                  '{startDate} {startHour}:00:00',
+                                                  '{endDate} 24:00:00'
+                                                ) AS delivery_start,
+                                                ecop6 AS ecop6
+                                              FROM algotrader.ireland.wind_demand_data_id1_auction
+                                              WHERE '{startDate} {startHour}:00:00' <= delivery_start AT TIME ZONE {timezone}
+                                              AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00'
+                                            )
+                                            SELECT
+                                              extract(epoch from delivery_start)::int as epoch_time,
+                                              delivery_start,
+                                              LAG(ecop6, {hourLag}) OVER (order by delivery_start) AS wind_ecop6
+                                            FROM WIND
+                                            ORDER BY 1
+                                            "
+    # simply a difference between 2 consecutive hours (not really a gradient)
+WIND_CHANGE:               "WITH WIND AS (
+                              SELECT
+                                time_bucket_gapfill(
+                                  '1 HOUR',
+                                  delivery_start AT TIME ZONE {timezone},
+                                  '{startDate} {startHour}:00:00',
+                                  '{endDate} 24:00:00'
+                                ) AS delivery_start,
+                                ecop6 AS ecop6
+                              FROM algotrader.ireland.wind_demand_data_id1_auction
+                              WHERE '{startDate} {startHour}:00:00' <= delivery_start AT TIME ZONE {timezone}
+                              AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00'
+                            )
+                            SELECT
+                              extract(epoch from delivery_start)::int as epoch_time,
+                              delivery_start,
+                              LAG(ecop6, {hourLag}) OVER (order by delivery_start) - LAG(ecop6, 2) OVER (order by delivery_start) AS wind_change_ecop6
+                            FROM WIND
+                            ORDER BY 1
+                            "
+
+    ## difference between demand and fundamentals
+RESIDUAL:                           "WITH RESIDUAL AS (
+                                      SELECT
+                                        time_bucket_gapfill(
+                                          '1 HOUR',
+                                          delivery_start AT TIME ZONE {timezone},
+                                          '{startDate} {startHour}:00:00',
+                                          '{endDate} 24:00:00'
+                                        ) AS delivery_start,
+                                          enappsys - ecop6 AS enappsys_ecop6
+                                      FROM algotrader.ireland.wind_demand_data_id1_auction
+                                      WHERE '{startDate} {startHour}:00:00' <= delivery_start AT TIME ZONE {timezone}
+                                      AND delivery_start AT TIME ZONE {timezone} < '{endDate} 24:00:00' 
+                                    )
+                                    SELECT
+                                      extract(epoch from delivery_start)::int as epoch_time,
+                                      delivery_start,
+                                      LAG(enappsys_ecop6, {hourLag}) OVER (ORDER BY DELIVERY_START) AS enappsys_ecop6_residual
+                                    FROM RESIDUAL
+                                    ORDER BY 1
+                                    "

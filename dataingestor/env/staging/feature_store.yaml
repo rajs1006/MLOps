@@ -1,0 +1,20 @@
+project: IDA
+registry: 
+  path: s3://bayaga/ireland/registry.pb
+provider: local
+offline_store:
+  type: postgres
+  host: <host name of db>
+  port: 5432
+  database: <name of db>
+  password: 1234abc
+  db_schema: public
+  user: <db used>
+  sslmode: verify-full
+  sslkey_path: <path of .key file>
+  sslcert_path: <path of .crt file>
+  sslrootcert_path: <path of ca.crt file>
+online_store:
+    type: redis
+    connection_string: localhost:6379
+entity_key_serialization_version: 2

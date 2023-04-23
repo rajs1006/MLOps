@@ -1,0 +1,11 @@
+project: IDA
+registry: 
+  path: s3://bayaga/ireland/registry.pb
+provider: local
+offline_store:
+  type: feaststore.RequestDataSource.RequestOfflineStore
+  uri: url
+online_store:
+    type: redis
+    connection_string: localhost:6379
+entity_key_serialization_version: 2

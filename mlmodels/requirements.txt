@@ -1,0 +1,2 @@
+mlflow[extras]
+zenml[server]
